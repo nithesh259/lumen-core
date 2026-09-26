@@ -81,44 +81,81 @@ Video Frame ──> Frame Processing ──> Dominant Color Detection ──> Li
 
 ## Important Debugging Issue
 
-The ESP32-CAM currently reports:
+# Troubleshooting: Wi-Fi Brownout Hardware Exceptions
 
-```text
+## 🚨 Symptom & Error Log
+When initializing the Wi-Fi stack during Stage 2 firmware execution, the MCU encounters a hardware exception and drops into an infinite boot loop. The UART serial monitor outputs the following trace:
+
+```log
 E BOD: Brownout detector was triggered
-The LED-only firmware works, while the Wi-Fi firmware causes repeated resets.
+```
 
-The LEDs were disconnected during testing and the issue remained.
+### Context & Current State
+* **Isolation Test:** The issue persists even when all 4 physical LEDs and current-limiting resistors are entirely disconnected from the GPIO pins.
+* **Baseline Test:** Bare-metal GPIO toggling sketches (Stage 1) execute indefinitely without errors. The crash is triggered exclusively by the high transient current draw of the Wi-Fi radio.
 
-The current investigation is focused on providing a stable 5 V power source capable of handling the ESP32-CAM's Wi-Fi current demand.
+---
 
-See docs/troubleshooting.md for details.
+## 🔍 Root Cause Analysis
 
-Learning Goals
-This project is being developed to understand:
+1. **FTDI Current Constraints:** Standard USB-to-Serial FTDI programmers typically limit current output to **50mA–100mA** on their power lines. While sufficient for standard logic operations, it is completely inadequate for the high-power demand of the ESP32-CAM radio.
+2. **Wi-Fi Transient Spikes:** The moment the Wi-Fi stack initiates radio calibration and transmission, current consumption abruptly spikes up to **500mA+**. This sudden load causes the voltage rail to drop below the chip's internal operating threshold, forcing the Brownout Detector (BOD) to reset the system to protect flash memory from corruption.
+3. **Board Topography:** Generic AI-Thinker ESP32-CAM development boards feature minimal onboard decoupling capacitance, leaving them highly sensitive to transient supply voltage drops.
 
-ESP32 GPIO control
+---
 
-Embedded C/C++
+## 🛠️ Hardware Resolutions (Permanent Fixes)
 
-Wi-Fi communication
+### 1. Dedicated External Power Supply
+Bypass the FTDI programmer's power delivery system completely by introducing a robust external power rail.
 
-HTTP communication
+* **Action:** Connect an external regulated **5V DC power supply rated for at least 1A to 2A** directly to the `5V` and `GND` pins of the ESP32-CAM.
+* **Crucial Ground Loop Prevention:** You **must** bridge the Ground (`GND`) pin of the external power supply to the Ground (`GND`) pin of your FTDI serial adapter. Without a shared common ground reference, serial data transmission (TX/RX) will fail or become corrupted.
 
-Python
+### 2. High-Capacity Local Decoupling
+To buffer the sudden electrical demands of the radio transceiver, introduce a local energy reservoir.
 
-OpenCV
+* **Action:** Install a **10µF to 100µF electrolytic capacitor** directly across the `5V` and `GND` rail on your prototyping breadboard.
+* **Placement:** Keep the capacitor leads as physically close to the ESP32-CAM module pins as possible to minimize inductive line resistance.
 
-Real-time systems
+---
 
-PC-to-embedded communication
+## 💻 Software Mitigation Strategies (Temporary Workarounds)
 
-LED control
+If you are awaiting hardware components, you can temporarily modify your C/C++ firmware configurations to dampen or ignore the current spike. 
 
-Audio/video signal processing
+> ⚠️ **Warning:** Software workarounds do not fix the physical power bottleneck. Disabling protection circuits can result in unstable execution or file-system corruption if the voltage sags too low.
 
-Project Status
-🚧 Work in Progress
+### Configuration A: Attenuate Wi-Fi Transmit Power
+Reducing the Radio Frequency (RF) output power directly clamps the peak transient current. Place this inside your `setup()` block immediately after your initialization calls:
 
-The GPIO LED controller is working.
+```cpp
+#include <WiFi.h>
 
-The next milestone is reliable Wi-Fi operation followed by PC-based video analysis.
+void setup() {
+    Serial.begin(115200);
+    
+    // Initialize Wi-Fi
+    WiFi.begin("YOUR_SSID", "YOUR_PASSWORD");
+    
+    // Attenuate TX power to a lower threshold to reduce peak current draw.
+    // Available profiles: WIFI_POWER_19_5dBm (Default), 17dBm, 15dBm, 13dBm, 11dBm, 8_5dBm
+    WiFi.setTxPower(WIFI_POWER_11dBm); 
+}
+```
+
+### Configuration B: Bypass Hardware Brownout Thresholds
+You can forcefully clear the hardware register responsible for tracking under-voltage drops via bare-metal configuration calls.
+
+```cpp
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+
+void setup() {
+    // Forcefully disable the hardware brownout detection register at early boot
+    WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); 
+    
+    Serial.begin(115200);
+    // Proceed to high-current Wi-Fi initialization operations...
+}
+```
