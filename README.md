@@ -1,6 +1,4 @@
-Here is your updated documentation formatted directly in raw Markdown code so you can easily copy and paste it into your README.md:
 
-Markdown
 # Real-Time Visual Lighting Control System
 
 An ESP32-CAM based lighting project designed to synchronize physical LEDs with video and audio playing on a PC.
